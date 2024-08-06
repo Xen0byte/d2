@@ -1,17 +1,15 @@
 #### Features 🚀
 
+- Variables definitions can now refer to other variables in the current scope [#2052](https://github.com/terrastruct/d2/pull/2052)
+
 #### Improvements 🧹
 
-- Opacity 0 shapes no longer have a label mask which made any segment of connections going through them lower opacity [#1940](https://github.com/terrastruct/d2/pull/1940)
-- Bidirectional connections are now animated in opposite directions rather than one direction [#1939](https://github.com/terrastruct/d2/pull/1939)
+- Sequence diagram edge groups account for edge label heights [#2038](https://github.com/terrastruct/d2/pull/2038)
+- Sequence diagram self-referential edges account for edge label heights [#2040](https://github.com/terrastruct/d2/pull/2040)
+- Sequence diagram: The spacing between self-referential edges and regular edges is uniform [#2043](https://github.com/terrastruct/d2/pull/2043)
 
 #### Bugfixes ⛑️
 
-- Local relative icons are relative to the d2 file instead of CLI invoke path [#1924](https://github.com/terrastruct/d2/pull/1924)
-- Custom label positions weren't being read when the width was smaller than the label [#1928](https://github.com/terrastruct/d2/pull/1928)
-- Using `shape: circle` for arrowheads no longer removes all arrowheads along path in sketch mode [#1942](https://github.com/terrastruct/d2/pull/1942)
-- Globs to null connections work [#1965](https://github.com/terrastruct/d2/pull/1965)
-- Edge globs setting styles inherit correctly in child boards [#1967](https://github.com/terrastruct/d2/pull/1967)
-- Board links imported with spread imports work [#1972](https://github.com/terrastruct/d2/pull/1972)
-- Fix importing a file with nested boards [#1998](https://github.com/terrastruct/d2/pull/1998)
-- Fix importing a file with underscores in links [#1999](https://github.com/terrastruct/d2/pull/1999)
+- Sequence diagram multi-line edge labels no longer can collide with other elements [#2049](https://github.com/terrastruct/d2/pull/2049)
+- Sequence diagram long self-referential edge labels no longer can collide neighboring actors (or its own) lifeline edges [#2050](https://github.com/terrastruct/d2/pull/2050)
+- Globs: An edge case was fixed where globs used in edges were creating nodes when it shouldn't have [#2051](https://github.com/terrastruct/d2/pull/2051)

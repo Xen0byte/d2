@@ -2352,6 +2352,36 @@ layers: {
 			},
 		},
 		{
+			name: "link-file-underscore",
+			text: `...@x`,
+			files: map[string]string{
+				"x.d2": `x
+
+layers: {
+  a: { c }
+  b: { d.link: _.layers.a }
+	e: {
+    l
+
+		layers: {
+			j: {
+			  k.link: _
+			  n.link: _._
+			  m.link: _._.layers.a
+			}
+		}
+  }
+}
+`,
+			},
+			assertions: func(t *testing.T, g *d2graph.Graph) {
+				tassert.Equal(t, "root.layers.a", g.Layers[1].Objects[0].Link.Value)
+				tassert.Equal(t, "root.layers.e", g.Layers[2].Layers[0].Objects[0].Link.Value)
+				tassert.Equal(t, "root", g.Layers[2].Layers[0].Objects[1].Link.Value)
+				tassert.Equal(t, "root.layers.a", g.Layers[2].Layers[0].Objects[2].Link.Value)
+			},
+		},
+		{
 			name: "link-board-underscore-not-found",
 			text: `x
 layers: {
@@ -2734,6 +2764,29 @@ x*: {
 			},
 		},
 		{
+			name: "var_in_vars",
+			text: `vars: {
+    Apple: {
+        shape:circle
+        label:Granny Smith
+    }
+    Cherry: {
+        shape:circle
+        label:Rainier Cherry
+    }
+    SummerFruit: {
+        xx: ${Apple}
+        cc: ${Cherry}
+        xx -> cc
+    }
+}
+
+x: ${Apple}
+c: ${Cherry}
+sf: ${SummerFruit}
+`,
+		},
+		{
 			name: "class-shape-class",
 			text: `classes: {
   classClass: {
@@ -2922,7 +2975,7 @@ layers: {
 			},
 		},
 		{
-			name: "import-link-underscore",
+			name: "import-link-underscore-1",
 			text: `k
 
 layers: {
@@ -2955,6 +3008,73 @@ layers: {
 				tassert.Equal(t, "root.layers.x.layers.b", g.Layers[0].Layers[0].Layers[0].Objects[2].Link.Value)
 				tassert.Equal(t, "root.layers.x.layers.k", g.Layers[0].Layers[0].Objects[1].Link.Value)
 			},
+		},
+		{
+			name: "import-link-underscore-2",
+			text: `k
+
+layers: {
+  x: @x
+}`,
+			files: map[string]string{
+				"x.d2": `a
+layers: {
+  b: {
+    d.link: _
+		s.link: _.layers.k
+
+    layers: {
+      c: {
+        c.link: _
+				z.link: _._
+				f.link: _._.layers.b
+      }
+    }
+  }
+  k: {
+    k
+  }
+}`,
+			},
+			assertions: func(t *testing.T, g *d2graph.Graph) {
+				tassert.Equal(t, "root.layers.x", g.Layers[0].Layers[0].Objects[0].Link.Value)
+				tassert.Equal(t, "root.layers.x.layers.b", g.Layers[0].Layers[0].Layers[0].Objects[0].Link.Value)
+				tassert.Equal(t, "root.layers.x", g.Layers[0].Layers[0].Layers[0].Objects[1].Link.Value)
+				tassert.Equal(t, "root.layers.x.layers.b", g.Layers[0].Layers[0].Layers[0].Objects[2].Link.Value)
+				tassert.Equal(t, "root.layers.x.layers.k", g.Layers[0].Layers[0].Objects[1].Link.Value)
+			},
+		},
+		{
+			name: "invalid-link-1",
+			text: `k
+
+layers: {
+  x: {...@x}
+}`,
+			files: map[string]string{
+				"x.d2": `k
+layers: {
+  y.link: @n
+}`,
+				"n.d2": `n`,
+			},
+			expErr: `d2/testdata/d2compiler/TestCompile/x.d2:3:5: a board itself cannot be linked; only objects within a board can be linked`,
+		},
+		{
+			name: "invalid-link-2",
+			text: `k
+
+layers: {
+  x: @x
+}`,
+			files: map[string]string{
+				"x.d2": `k
+layers: {
+  y.link: @n
+}`,
+				"n.d2": `n`,
+			},
+			expErr: `d2/testdata/d2compiler/TestCompile/x.d2:3:5: a board itself cannot be linked; only objects within a board can be linked`,
 		},
 		{
 			name: "import-nested-layers",
@@ -3974,11 +4094,14 @@ vars: {
 hi: {
   vars: {
     x: ${x}-b
+		b: ${x}
   }
   yo: ${x}
+  hey: ${b}
 }
 `, "")
 					assert.Equal(t, "a-b", g.Objects[1].Label.Value)
+					assert.Equal(t, "a-b", g.Objects[2].Label.Value)
 				},
 			},
 			{
@@ -4566,6 +4689,84 @@ a -> b
 `, ``)
 				assert.Equal(t, "green", g.Edges[0].Attributes.Style.Stroke.Value)
 				assert.Equal(t, "red", g.Edges[1].Attributes.Style.Stroke.Value)
+			},
+		},
+		{
+			name: "exists-filter",
+			run: func(t *testing.T) {
+				g, _ := assertCompile(t, `
+*: {
+  &link: *
+	style.underline: true
+}
+
+x
+y.link: https://google.com
+`, ``)
+				assert.Equal(t, (*d2graph.Scalar)(nil), g.Objects[0].Attributes.Style.Underline)
+				assert.Equal(t, "true", g.Objects[1].Attributes.Style.Underline.Value)
+			},
+		},
+		{
+			name: "glob-filter",
+			run: func(t *testing.T) {
+				g, _ := assertCompile(t, `
+*: {
+  &link: *google*
+	style.underline: true
+}
+
+x
+y.link: https://google.com
+z.link: https://yahoo.com
+`, ``)
+				assert.Equal(t, (*d2graph.Scalar)(nil), g.Objects[0].Attributes.Style.Underline)
+				assert.Equal(t, "true", g.Objects[1].Attributes.Style.Underline.Value)
+				assert.Equal(t, (*d2graph.Scalar)(nil), g.Objects[2].Attributes.Style.Underline)
+			},
+		},
+		{
+			name: "reapply-scenario",
+			run: func(t *testing.T) {
+				g, _ := assertCompile(t, `
+*.b*.shape: circle
+x: {
+  b
+}
+
+scenarios: {
+  k: {
+    x: {
+      b
+    }
+  }
+}
+`, ``)
+				assert.Equal(t, "circle", g.Objects[1].Attributes.Shape.Value)
+				assert.Equal(t, "circle", g.Scenarios[0].Objects[1].Attributes.Shape.Value)
+			},
+		},
+		{
+			name: "second-scenario",
+			run: func(t *testing.T) {
+				g, _ := assertCompile(t, `
+*.b*.shape: circle
+
+scenarios: {
+  k: {
+    x: {
+      b
+    }
+  }
+  z: {
+    x: {
+      b
+    }
+  }
+}
+`, ``)
+				assert.Equal(t, "circle", g.Scenarios[0].Objects[1].Attributes.Shape.Value)
+				assert.Equal(t, "circle", g.Scenarios[1].Objects[1].Attributes.Shape.Value)
 			},
 		},
 	}

@@ -144,9 +144,8 @@ func (c *compiler) compileSubstitutions(m *Map, varsStack []*Map) {
 				}
 			}
 		} else if f.Map() != nil {
-			// don't resolve substitutions in vars with the current scope of vars
 			if f.Name == "vars" {
-				c.compileSubstitutions(f.Map(), varsStack[1:])
+				c.compileSubstitutions(f.Map(), varsStack)
 				c.validateConfigs(f.Map().GetField("d2-config"))
 			} else {
 				c.compileSubstitutions(f.Map(), varsStack)
@@ -227,8 +226,8 @@ func (c *compiler) resolveSubstitutions(varsStack []*Map, node Node) (removedFie
 	case *d2ast.UnquotedString:
 		for i, box := range s.Value {
 			if box.Substitution != nil {
-				for _, vars := range varsStack {
-					resolvedField = c.resolveSubstitution(vars, box.Substitution)
+				for i, vars := range varsStack {
+					resolvedField = c.resolveSubstitution(vars, node, box.Substitution, i == 0)
 					if resolvedField != nil {
 						if resolvedField.Primary() != nil {
 							if _, ok := resolvedField.Primary().Value.(*d2ast.Null); ok {
@@ -319,8 +318,8 @@ func (c *compiler) resolveSubstitutions(varsStack []*Map, node Node) (removedFie
 	case *d2ast.DoubleQuotedString:
 		for i, box := range s.Value {
 			if box.Substitution != nil {
-				for _, vars := range varsStack {
-					resolvedField = c.resolveSubstitution(vars, box.Substitution)
+				for i, vars := range varsStack {
+					resolvedField = c.resolveSubstitution(vars, node, box.Substitution, i == 0)
 					if resolvedField != nil {
 						break
 					}
@@ -344,14 +343,36 @@ func (c *compiler) resolveSubstitutions(varsStack []*Map, node Node) (removedFie
 	return removedField
 }
 
-func (c *compiler) resolveSubstitution(vars *Map, substitution *d2ast.Substitution) *Field {
+func (c *compiler) resolveSubstitution(vars *Map, node Node, substitution *d2ast.Substitution, isCurrentScopeVars bool) *Field {
 	if vars == nil {
 		return nil
 	}
 
+	fieldNode, fok := node.(*Field)
+	parent := ParentField(node)
+
 	for i, p := range substitution.Path {
 		f := vars.GetField(p.Unbox().ScalarString())
 		if f == nil {
+			return nil
+		}
+		// Consider this case:
+		//
+		// ```
+		// vars: {
+		//   x: a
+		// }
+		// hi: {
+		//   vars: {
+		//     x: ${x}-b
+		//   }
+		//   yo: ${x}
+		// }
+		// ```
+		//
+		// When resolving hi.vars.x, the vars stack includes itself.
+		// So this next if clause says, "ignore if we're using the current scope's vars to try to resolve a substitution that requires a var from further in the stack"
+		if fok && fieldNode.Name == p.Unbox().ScalarString() && isCurrentScopeVars && parent.Name == "vars" {
 			return nil
 		}
 
@@ -382,6 +403,17 @@ func (g *globContext) copy() *globContext {
 	return &g2
 }
 
+func (g *globContext) copyApplied(from *globContext) {
+	g.appliedFields = make(map[string]struct{})
+	for k, v := range from.appliedFields {
+		g.appliedFields[k] = v
+	}
+	g.appliedEdges = make(map[string]struct{})
+	for k, v := range from.appliedEdges {
+		g.appliedEdges[k] = v
+	}
+}
+
 func (g *globContext) prefixed(dst *Map) *globContext {
 	g2 := g.copy()
 	prefix := d2ast.MakeKeyPath(RelIDA(g2.refctx.ScopeMap, dst))
@@ -408,6 +440,9 @@ func (c *compiler) ampersandFilterMap(dst *Map, ast, scopeAST *d2ast.Map) bool {
 				ScopeMap: dst,
 				ScopeAST: scopeAST,
 			})
+			if n.MapKey.NotAmpersand {
+				ok = !ok
+			}
 			if !ok {
 				if len(c.mapRefContextStack) == 0 {
 					return false
@@ -444,8 +479,19 @@ func (c *compiler) compileMap(dst *Map, ast, scopeAST *d2ast.Map) {
 					globs = append(globs, g.prefixed(dst))
 				}
 			}
-		} else if NodeBoardKind(dst) != "" {
-			// Make all globs relative to the scenario or step.
+		} else if NodeBoardKind(dst) == BoardScenario {
+			for _, g := range previousGlobs {
+				g2 := g.prefixed(dst)
+				// We don't want globs applied in a given scenario to affect future boards
+				// Copying the applied fields and edges keeps the applications scoped to this board
+				// Note that this is different from steps, where applications carry over
+				if !g.refctx.Key.HasTripleGlob() {
+					// Triple globs already apply independently to each board
+					g2.copyApplied(g)
+				}
+				globs = append(globs, g2)
+			}
+		} else if NodeBoardKind(dst) == BoardStep {
 			for _, g := range previousGlobs {
 				globs = append(globs, g.prefixed(dst))
 			}
@@ -512,7 +558,7 @@ func (c *compiler) compileMap(dst *Map, ast, scopeAST *d2ast.Map) {
 			}
 
 			OverlayMap(dst, impn.Map())
-			c.updateLinks(dst)
+			c.extendLinks(dst, ParentField(dst))
 
 			if impnf, ok := impn.(*Field); ok {
 				if impnf.Primary_ != nil {
@@ -591,7 +637,7 @@ func (c *compiler) compileKey(refctx *RefContext) {
 }
 
 func (c *compiler) compileField(dst *Map, kp *d2ast.KeyPath, refctx *RefContext) {
-	if refctx.Key.Ampersand {
+	if refctx.Key.Ampersand || refctx.Key.NotAmpersand {
 		return
 	}
 
@@ -607,7 +653,7 @@ func (c *compiler) compileField(dst *Map, kp *d2ast.KeyPath, refctx *RefContext)
 }
 
 func (c *compiler) ampersandFilter(refctx *RefContext) bool {
-	if !refctx.Key.Ampersand {
+	if !refctx.Key.Ampersand && !refctx.Key.NotAmpersand {
 		return true
 	}
 	if len(c.mapRefContextStack) == 0 || !c.mapRefContextStack[len(c.mapRefContextStack)-1].Key.SupportsGlobFilters() {
@@ -692,8 +738,14 @@ func (c *compiler) _ampersandFilter(f *Field, refctx *RefContext) bool {
 		return false
 	}
 
-	if refctx.Key.Value.ScalarBox().Unbox().ScalarString() != f.Primary_.Value.ScalarString() {
-		return false
+	us, ok := refctx.Key.Value.ScalarBox().Unbox().(*d2ast.UnquotedString)
+
+	if ok && us.Pattern != nil {
+		return matchPattern(f.Primary_.Value.ScalarString(), us.Pattern)
+	} else {
+		if refctx.Key.Value.ScalarBox().Unbox().ScalarString() != f.Primary_.Value.ScalarString() {
+			return false
+		}
 	}
 
 	return true
@@ -810,7 +862,7 @@ func (c *compiler) _compileField(f *Field, refctx *RefContext) {
 				}
 			}
 			OverlayMap(f.Map(), n)
-			c.updateLinks(f.Map())
+			c.extendLinks(f.Map(), f)
 			switch NodeBoardKind(f) {
 			case BoardScenario, BoardStep:
 				c.overlayClasses(f.Map())
@@ -843,79 +895,33 @@ func (c *compiler) ignoreLazyGlob(n Node) bool {
 	return false
 }
 
-func (c *compiler) updateLinks(m *Map) {
+// When importing a file, all of its board links need to be extended to reflect their new path
+func (c *compiler) extendLinks(m *Map, importF *Field) {
+	nodeBoardKind := NodeBoardKind(m)
 	for _, f := range m.Fields {
 		if f.Name == "link" {
+			if nodeBoardKind != "" {
+				c.errorf(f.LastRef().AST(), "a board itself cannot be linked; only objects within a board can be linked")
+				continue
+			}
 			val := f.Primary().Value.ScalarString()
 			link, err := d2parser.ParseKey(val)
 			if err != nil {
 				continue
 			}
-
 			linkIDA := link.IDA()
 			if len(linkIDA) == 0 {
 				continue
 			}
 
-			// When updateLinks is called, all valid board links are already compiled and changed to the qualified path beginning with "root"
-			if linkIDA[0] != "root" {
-				continue
-			}
-			bida := BoardIDA(f)
-			aida := IDA(f)
-
-			uplevels := -1
-			// The id path from that board to field
-			if len(aida)-len(bida) > len(bida)+1 {
-				relaida := aida[len(bida)+1 : len(aida)-len(bida)]
-				// If the link value has underscores, the path length can be less than the path length of the field
-				uplevels = len(relaida) - len(linkIDA) + 1
-			}
-
-			if len(bida) != len(aida) {
-				prependIDA := aida[:len(aida)-len(bida)]
-				if uplevels > 0 {
-					prependIDA = prependIDA[:len(prependIDA)-uplevels]
-				} else if uplevels == 0 {
-					// It's a sibling, so we go up one level to find it
-					prependIDA = prependIDA[:len(prependIDA)-2]
-				}
-				fullIDA := []string{"root"}
-				// With nested imports, a value may already have been updated with part of the absolute path
-				// E.g.,
-				// The import prepends path a b c
-				// The existing path is b c d
-				// So the new path is
-				// a b c
-				//   b c d
-				// -------
-				// a b c d
-			OUTER:
-				// Starts at 1 assuming 0 is "root" for both
-				// +2 assuming layers/scenarios/steps is in between both
-				for i := 1; i < len(prependIDA); i += 2 {
-					for j := 0; i+j < len(prependIDA); j++ {
-						if 1+j >= len(linkIDA) || prependIDA[i+j] != linkIDA[1+j] {
-							break
-						}
-						// Reached the end and all common
-						if i+j == len(prependIDA)-1 {
-							break OUTER
-						}
-					}
-					fullIDA = append(fullIDA, prependIDA[i])
-					fullIDA = append(fullIDA, prependIDA[i+1])
-				}
-				// Chop off "root"
-				fullIDA = append(fullIDA, linkIDA[1:]...)
-
-				kp := d2ast.MakeKeyPath(fullIDA)
-				s := d2format.Format(kp)
-				f.Primary_.Value = d2ast.MakeValueBox(d2ast.FlatUnquotedString(s)).ScalarBox().Unbox()
-			}
+			importIDA := IDA(importF)
+			extendedIDA := append(importIDA, linkIDA[1:]...)
+			kp := d2ast.MakeKeyPath(extendedIDA)
+			s := d2format.Format(kp)
+			f.Primary_.Value = d2ast.MakeValueBox(d2ast.FlatUnquotedString(s)).ScalarBox().Unbox()
 		}
 		if f.Map() != nil {
-			c.updateLinks(f.Map())
+			c.extendLinks(f.Map(), importF)
 		}
 	}
 }
